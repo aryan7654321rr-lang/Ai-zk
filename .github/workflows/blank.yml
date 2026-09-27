@@ -3,8 +3,7 @@ name: NOVA-X APK Build
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -21,124 +20,99 @@ jobs:
       - name: Locate NOVA project
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "Repository contents:"
-          find . -maxdepth 3 -type f | sort | head -200
-
-          # If package.json is already present, use the repository directly.
-          if [ -f "./package.json" ]; then
-            echo "." > nova-project-dir.txt
-            echo "Found package.json in repository root."
+          if [ -f package.json ]; then
+            printf '%s\n' '.' > nova-project-dir.txt
             exit 0
           fi
 
-          # Otherwise find a NOVA ZIP and extract it.
-          ZIP_FILE=$(find . -maxdepth 3 -type f \
-            \( -iname "*.zip" \) \
-            -print -quit)
+          ZIP_FILE=$(find . -maxdepth 3 -type f -iname '*.zip' -print -quit || true)
 
           if [ -z "$ZIP_FILE" ]; then
-            echo "ERROR: No package.json or NOVA ZIP was found."
-            echo ""
-            echo "Upload either:"
-            echo "  1. the extracted NOVA project, or"
-            echo "  2. the NOVA ZIP file."
+            echo "ERROR: No package.json or ZIP containing a NOVA project was found."
             exit 1
           fi
 
-          echo "Found ZIP: $ZIP_FILE"
-
+          rm -rf nova-extracted
           mkdir -p nova-extracted
+
           unzip -q "$ZIP_FILE" -d nova-extracted
 
-          PROJECT_DIR=$(dirname "$(find nova-extracted \
-            -type f \
-            -name package.json \
-            -print -quit)")
-
-          if [ -z "$PROJECT_DIR" ] || [ "$PROJECT_DIR" = "nova-extracted" ]; then
-            if [ -f "nova-extracted/package.json" ]; then
-              PROJECT_DIR="nova-extracted"
-            fi
-          fi
+          PROJECT_DIR=$(dirname "$(find nova-extracted -type f -name package.json -print -quit || true)")
 
           if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/package.json" ]; then
             echo "ERROR: package.json was not found after extracting the ZIP."
-            echo ""
-            echo "Extracted files:"
-            find nova-extracted -maxdepth 4 -type f | sort | head -300
+            find nova-extracted -maxdepth 5 -type f | sort | head -300
             exit 1
           fi
 
-          echo "NOVA project found at:"
-          echo "$PROJECT_DIR"
-
-          echo "$PROJECT_DIR" > nova-project-dir.txt
-
-      - name: Read project directory
-        id: project
-        shell: bash
-        run: |
-          PROJECT_DIR=$(cat nova-project-dir.txt)
-          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Using project directory: $PROJECT_DIR"
+          printf '%s\n' "$PROJECT_DIR" > nova-project-dir.txt
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: npm install
-
-      - name: Build NOVA
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: npm run build
-
-      - name: Install Capacitor
-        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         run: |
+          set -euo pipefail
+          cd "$(cat "$GITHUB_WORKSPACE/nova-project-dir.txt")"
+          npm install
+
+      - name: Build NOVA web application
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$(cat "$GITHUB_WORKSPACE/nova-project-dir.txt")"
+          npm run build
+
+      - name: Install Capacitor Android packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$(cat "$GITHUB_WORKSPACE/nova-project-dir.txt")"
           npm install @capacitor/core @capacitor/cli @capacitor/android
 
-      - name: Create Android project
-        working-directory: ${{ steps.project.outputs.dir }}
+      - name: Create or update Android project
+        shell: bash
         run: |
+          set -euo pipefail
+          cd "$(cat "$GITHUB_WORKSPACE/nova-project-dir.txt")"
+
           if [ ! -d android ]; then
             npx cap add android
-          else
-            echo "Android project already exists."
           fi
 
-      - name: Sync NOVA to Android
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: npx cap sync android
+          npx cap sync android
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
           cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build APK
-        working-directory: ${{ steps.project.outputs.dir }}/android
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
-
-      - name: Locate APK
+      - name: Build debug APK
         shell: bash
         run: |
-          find . -type f -name "*.apk" -print
+          set -euo pipefail
+
+          PROJECT_DIR="$(cat "$GITHUB_WORKSPACE/nova-project-dir.txt")"
+
+          cd "$PROJECT_DIR/android"
+
+          chmod +x gradlew
+
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload NOVA APK
         uses: actions/upload-artifact@v4
         with:
           name: NOVA-X-debug-APK
-          path: "**/android/app/build/outputs/apk/debug/*.apk"
+          path: '**/android/app/build/outputs/apk/debug/*.apk'
           if-no-files-found: error
