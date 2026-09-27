@@ -18,40 +18,92 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check NOVA project
+      - name: Locate NOVA project
         shell: bash
         run: |
           set -e
 
-          if [ ! -f package.json ]; then
-            echo "ERROR: package.json was not found in the repository root."
-            echo "Make sure the contents of the NOVA project are uploaded,"
-            echo "not the ZIP file itself."
+          echo "Repository contents:"
+          find . -maxdepth 3 -type f | sort | head -200
+
+          # If package.json is already present, use the repository directly.
+          if [ -f "./package.json" ]; then
+            echo "." > nova-project-dir.txt
+            echo "Found package.json in repository root."
+            exit 0
+          fi
+
+          # Otherwise find a NOVA ZIP and extract it.
+          ZIP_FILE=$(find . -maxdepth 3 -type f \
+            \( -iname "*.zip" \) \
+            -print -quit)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No package.json or NOVA ZIP was found."
+            echo ""
+            echo "Upload either:"
+            echo "  1. the extracted NOVA project, or"
+            echo "  2. the NOVA ZIP file."
             exit 1
           fi
 
-          echo "NOVA project found."
-          echo "Node version:"
-          node --version || true
+          echo "Found ZIP: $ZIP_FILE"
+
+          mkdir -p nova-extracted
+          unzip -q "$ZIP_FILE" -d nova-extracted
+
+          PROJECT_DIR=$(dirname "$(find nova-extracted \
+            -type f \
+            -name package.json \
+            -print -quit)")
+
+          if [ -z "$PROJECT_DIR" ] || [ "$PROJECT_DIR" = "nova-extracted" ]; then
+            if [ -f "nova-extracted/package.json" ]; then
+              PROJECT_DIR="nova-extracted"
+            fi
+          fi
+
+          if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/package.json" ]; then
+            echo "ERROR: package.json was not found after extracting the ZIP."
+            echo ""
+            echo "Extracted files:"
+            find nova-extracted -maxdepth 4 -type f | sort | head -300
+            exit 1
+          fi
+
+          echo "NOVA project found at:"
+          echo "$PROJECT_DIR"
+
+          echo "$PROJECT_DIR" > nova-project-dir.txt
+
+      - name: Read project directory
+        id: project
+        shell: bash
+        run: |
+          PROJECT_DIR=$(cat nova-project-dir.txt)
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Using project directory: $PROJECT_DIR"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Install dependencies
+        working-directory: ${{ steps.project.outputs.dir }}
         run: npm install
 
-      - name: Build NOVA web application
+      - name: Build NOVA
+        working-directory: ${{ steps.project.outputs.dir }}
         run: npm run build
 
       - name: Install Capacitor
+        working-directory: ${{ steps.project.outputs.dir }}
         run: |
           npm install @capacitor/core @capacitor/cli @capacitor/android
 
-      - name: Initialize Android project
-        shell: bash
+      - name: Create Android project
+        working-directory: ${{ steps.project.outputs.dir }}
         run: |
           if [ ! -d android ]; then
             npx cap add android
@@ -59,33 +111,34 @@ jobs:
             echo "Android project already exists."
           fi
 
-      - name: Sync NOVA with Android
+      - name: Sync NOVA to Android
+        working-directory: ${{ steps.project.outputs.dir }}
         run: npx cap sync android
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
           cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build debug APK
-        working-directory: android
+      - name: Build APK
+        working-directory: ${{ steps.project.outputs.dir }}/android
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug
 
-      - name: Find APK
+      - name: Locate APK
         shell: bash
         run: |
-          find android -type f -name "*.apk" -print
+          find . -type f -name "*.apk" -print
 
       - name: Upload NOVA APK
         uses: actions/upload-artifact@v4
         with:
           name: NOVA-X-debug-APK
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: "**/android/app/build/outputs/apk/debug/*.apk"
           if-no-files-found: error
