@@ -1,0 +1,99 @@
+name: Build NOVA Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: Build NOVA APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout NOVA
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Create Android web wrapper
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p android-wrapper/www
+
+          # Copy NOVA's web interface
+          cp -r nova/static/* android-wrapper/www/
+
+          cd android-wrapper
+
+          cat > package.json <<'EOF'
+          {
+            "name": "nova-android",
+            "version": "1.0.0",
+            "private": true,
+            "scripts": {
+              "build": "echo NOVA Android build"
+            },
+            "dependencies": {
+              "@capacitor/android": "^8.0.0",
+              "@capacitor/core": "^8.0.0"
+            },
+            "devDependencies": {
+              "@capacitor/cli": "^8.0.0"
+            }
+          }
+          EOF
+
+          npm install
+
+          npx cap init NOVA com.nova.personalai \
+            --web-dir www
+
+          npx cap add android
+
+          npx cap sync android
+
+      - name: Configure NOVA Android app
+        shell: bash
+        run: |
+          cd android-wrapper
+
+          # Give the application a recognizable launcher label
+          sed -i 's/app_name">.*</app_name">NOVA</' \
+            android/app/src/main/res/values/strings.xml || true
+
+      - name: Build APK
+        working-directory: android-wrapper/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Rename APK
+        shell: bash
+        run: |
+          mkdir -p output
+          cp android-wrapper/android/app/build/outputs/apk/debug/app-debug.apk \
+             output/NOVA-debug.apk
+
+      - name: Upload NOVA APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NOVA-Android-APK
+          path: output/NOVA-debug.apk
+          if-no-files-found: error
