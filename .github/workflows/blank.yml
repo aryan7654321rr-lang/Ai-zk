@@ -1,4 +1,4 @@
-name: Build NOVA Android APK
+name: NOVA-X APK Build
 
 on:
   workflow_dispatch:
@@ -11,89 +11,81 @@ permissions:
 
 jobs:
   build-apk:
-    name: Build NOVA APK
+    name: Build NOVA Android APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout NOVA
-        uses: actions/checkout@v6
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: "npm"
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: "temurin"
-          java-version: "17"
-
-      - name: Create Android web wrapper
+      - name: Check NOVA project
         shell: bash
         run: |
           set -e
 
-          mkdir -p android-wrapper/www
+          if [ ! -f package.json ]; then
+            echo "ERROR: package.json was not found in the repository root."
+            echo "Make sure the contents of the NOVA project are uploaded,"
+            echo "not the ZIP file itself."
+            exit 1
+          fi
 
-          # Copy NOVA's web interface
-          cp -r nova/static/* android-wrapper/www/
+          echo "NOVA project found."
+          echo "Node version:"
+          node --version || true
 
-          cd android-wrapper
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
-          cat > package.json <<'EOF'
-          {
-            "name": "nova-android",
-            "version": "1.0.0",
-            "private": true,
-            "scripts": {
-              "build": "echo NOVA Android build"
-            },
-            "dependencies": {
-              "@capacitor/android": "^8.0.0",
-              "@capacitor/core": "^8.0.0"
-            },
-            "devDependencies": {
-              "@capacitor/cli": "^8.0.0"
-            }
-          }
-          EOF
+      - name: Install dependencies
+        run: npm install
 
-          npm install
+      - name: Build NOVA web application
+        run: npm run build
 
-          npx cap init NOVA com.nova.personalai \
-            --web-dir www
+      - name: Install Capacitor
+        run: |
+          npm install @capacitor/core @capacitor/cli @capacitor/android
 
-          npx cap add android
-
-          npx cap sync android
-
-      - name: Configure NOVA Android app
+      - name: Initialize Android project
         shell: bash
         run: |
-          cd android-wrapper
+          if [ ! -d android ]; then
+            npx cap add android
+          else
+            echo "Android project already exists."
+          fi
 
-          # Give the application a recognizable launcher label
-          sed -i 's/app_name">.*</app_name">NOVA</' \
-            android/app/src/main/res/values/strings.xml || true
+      - name: Sync NOVA with Android
+        run: npx cap sync android
 
-      - name: Build APK
-        working-directory: android-wrapper/android
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build debug APK
+        working-directory: android
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug
 
-      - name: Rename APK
+      - name: Find APK
         shell: bash
         run: |
-          mkdir -p output
-          cp android-wrapper/android/app/build/outputs/apk/debug/app-debug.apk \
-             output/NOVA-debug.apk
+          find android -type f -name "*.apk" -print
 
       - name: Upload NOVA APK
         uses: actions/upload-artifact@v4
         with:
-          name: NOVA-Android-APK
-          path: output/NOVA-debug.apk
+          name: NOVA-X-debug-APK
+          path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
